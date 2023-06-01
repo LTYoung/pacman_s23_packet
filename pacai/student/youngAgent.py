@@ -1,4 +1,4 @@
-
+from pacai.agents.capture.capture import CaptureAgent
 class OffensivePacketAgent(ReflexCaptureAgent):
     """
     A reflex agent that seeks food.
