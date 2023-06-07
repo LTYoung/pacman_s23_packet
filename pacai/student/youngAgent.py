@@ -2,54 +2,51 @@ from pacai.agents.capture.capture import CaptureAgent
 from pacai.core.eval import score as evalFn
 from pacai.util import util
 from pacai.core.directions import Directions
+import logging
 import random
+import time
 
 """shared agent infrastructure
 """
 
 
-class GigaChadAgent(CaptureAgent):
+class ReflexCaptureAgent(CaptureAgent):
     """
-    Agent infra like searching on tree and actions to take for
-    both offensive and defensive agents
+    A base class for reflex agents that chooses score-maximizing actions.
     """
 
-    # using default evaluation function
-    # "This evaluation function is meant for use with adversarial search agents
-    # (not reflex agents)."
     def __init__(self, index, evalFn=evalFn, depth=2, **kwargs):
         super().__init__(index, **kwargs)
+        self._evaluationFunction = evalFn
+        self._treeDepth = int(depth)
 
-        self._evalFn = evalFn
-        self._depth = depth
-        self.agent = CaptureAgent  # just gonna use this for now
-
-    def getEvalFn(self):
-        return self._evalFn
+    def getEvaluationFunction(self):
+        return self._evaluationFunction
 
     def getTreeDepth(self):
-        return self._depth
-
-    # From Young's AB implementation
-    def getAction(self, gameState):
-        depth = self.getTreeDepth()
-
-        return self.maxValue(gameState, depth, 0, -float("inf"), float("inf"))[1]
+        return self._treeDepth
 
     def maxValue(self, state, depth, angentIndex, alpha, beta):
         score = -float("inf")
         scores = []
-        legalActions = state.getLegalActions()
-
-        if depth == 0 or state.isWin() or state.isLose():
-            score = self.getEvaluationFunction()(state)  # type: ignore
-            return score, "Stop"
-
+        legalActions = state.getLegalActions(self.index)
         if "Stop" in legalActions:
             legalActions.remove("Stop")
 
+        if depth == 0 or state.isWin() or state.isLose():
+            score = self.getEvaluationFunction()(state)  # type: ignore
+            # return a random action
+            index = random.randint(0, len(legalActions) - 1)
+            return score, legalActions[index]
+
         scores = [
-            self.minValue(state.generateSuccessor(0, action), depth, 1, alpha, beta)[0]
+            self.minValue(
+                state.generateSuccessor(self.index, action),
+                depth,
+                angentIndex,
+                alpha,
+                beta,
+            )[0]
             for action in legalActions
         ]
         score = max(scores)
@@ -66,19 +63,20 @@ class GigaChadAgent(CaptureAgent):
     def minValue(self, state, depth, angentIndex, alpha, beta):
         score = float("inf")
         scores = []
-        legalActions = state.getLegalActions(angentIndex)
+        legalActions = state.getLegalActions(self.index)
+        if "Stop" in legalActions:
+            legalActions.remove("Stop")
 
         if depth == 0 or state.isWin() or state.isLose():
             score = self.getEvaluationFunction()(state)  # type: ignore
-            return score, "Stop"
-
-        if "Stop" in legalActions:
-            legalActions.remove("Stop")
+            # return a random action
+            index = random.randint(0, len(legalActions) - 1)
+            return score, legalActions[index]
 
         if angentIndex != state.getNumAgents() - 1:
             scores = [
                 self.minValue(
-                    state.generateSuccessor(angentIndex, action),
+                    state.generateSuccessor(self.index, action),
                     depth,
                     angentIndex + 1,
                     alpha,
@@ -89,7 +87,7 @@ class GigaChadAgent(CaptureAgent):
         else:
             scores = [
                 self.maxValue(
-                    state.generateSuccessor(angentIndex, action),
+                    state.generateSuccessor(self.index, action),
                     depth - 1,
                     0,
                     alpha,
@@ -107,7 +105,17 @@ class GigaChadAgent(CaptureAgent):
         beta = min(beta, score)
         return score, legalActions[index]
 
-    # End of Young's AB implementation
+    def chooseAction(self, gameState):
+        """
+        Picks among the actions with the highest return from `ReflexCaptureAgent.evaluate`.
+        """
+        depth = self.getTreeDepth()
+
+        # find out what team we are on
+        team = self.getTeam(gameState)
+
+        action = self.maxValue(gameState, depth, team[0], -float("inf"), float("inf"))
+        return action[1]
 
     def getSuccessor(self, gameState, action):
         """
@@ -118,87 +126,121 @@ class GigaChadAgent(CaptureAgent):
         pos = successor.getAgentState(self.index).getPosition()
 
         if pos != util.nearestPoint(pos):
-            # Only half a grid position was covered.
             return successor.generateSuccessor(self.index, action)
         else:
             return successor
 
+    def evaluate(self, gameState, action):
+        """
+        Computes a linear combination of features and feature weights.
+        """
 
-class GigaOffensiveAgent(GigaChadAgent):
-    """
-    Offensive block of GigaAgent
-    """
+        features = self.getFeatures(gameState, action)
+        weights = self.getWeights(gameState, action)
+        stateEval = sum(features[feature] * weights[feature] for feature in features)
 
-    def __init__(self, index, **kwargs):
-        super().__init__(index, **kwargs)
+        return stateEval
 
     def getFeatures(self, gameState, action):
         """
         Returns a dict of features for the state.
         The keys match up with the return from `ReflexCaptureAgent.getWeights`.
         """
-        features = {}
+
         successor = self.getSuccessor(gameState, action)
-        foodList = self.getFood(successor).asList()
+
+        return {"successorScore": self.getScore(successor)}
+
+    def getWeights(self, gameState, action):
+        """
+        Returns a dict of weights for the state.
+        The keys match up with the return from `ReflexCaptureAgent.getFeatures`.
+        """
+
+        return {"successorScore": 1.0}
+
+
+class CombinedReflexAgent(ReflexCaptureAgent):
+    """
+    A reflex agent that tries to keep its side Pacman-free.
+    This is to give you an idea of what a defensive agent could be like.
+    It is not the best or only way to make such an agent.
+    """
+
+    def __init__(self, index, **kwargs):
+        super().__init__(index)
+
+    def getFeatures(self, gameState, action):
+        features = {}
+
+        successor = self.getSuccessor(gameState, action)
         myState = successor.getAgentState(self.index)
         myPos = myState.getPosition()
-        capsuleList = self.getCapsules(gameState)
-        hostile = [successor.getAgentState(i) for i in self.getOpponents(successor)]
-        # 1. Compute distance to the nearest food.
+
+        features["successorScore"] = self.getScore(successor)
+
+        foodList = self.getFood(successor).asList()
+
         if len(foodList) > 0:
+            myPos = successor.getAgentState(self.index).getPosition()
             minDistance = min([self.getMazeDistance(myPos, food) for food in foodList])
             features["distanceToFood"] = minDistance
-        # 2. Compute distance to the nearest capsule.
-        if len(capsuleList) > 0:
-            minDistance = min(
-                [self.getMazeDistance(myPos, capsule) for capsule in capsuleList]
-            )
-            features["distanceToCapsule"] = minDistance
-        # 3. Compute distance to the nearest hostile that is not scared.
-        if len(hostile) > 0:
-            minDistance = min(
-                [
-                    self.getMazeDistance(myPos, hostile.getPosition())
-                    for hostile in hostile
-                    if not hostile.isPacman and hostile.scaredTimer == 0
-                ]
-            )
-            features["distanceToHostile"] = minDistance
-        # 4. Compute distance to the nearest hostile that is scared.
-        if len(hostile) > 0:
-            minDistance = min(
-                [
-                    self.getMazeDistance(myPos, hostile.getPosition())
-                    for hostile in hostile
-                    if not hostile.isPacman and hostile.scaredTimer > 0
-                ]
-            )
-            features["distanceToScaredHostile"] = minDistance
 
-        features["stateScore"] = self.getScore(gameState)
+        features["onDefense"] = 1
+        if myState.isPacman():
+            features["onDefense"] = 0
+
+        enemies = [successor.getAgentState(i) for i in self.getOpponents(successor)]
+        invaders = [a for a in enemies if a.isPacman() and a.getPosition() is not None]
+        features["numInvaders"] = len(invaders)
+
+        if len(invaders) > 0:
+            dists = [self.getMazeDistance(myPos, a.getPosition()) for a in invaders]
+            features["invaderDistance"] = min(dists)
+
+        if action == Directions.STOP:
+            features["stop"] = 1
+
+        rev = Directions.REVERSE[gameState.getAgentState(self.index).getDirection()]
+        if action == rev:
+            features["reverse"] = 1
 
         return features
 
     def getWeights(self, gameState, action):
-        """
-        Returns a dict from features to weights.
-        """
-        return {
-            "stateScore": 100,
-            "distanceToFood": -1,
-            "distanceToCapsule": -1,
-            "distanceToHostile": 0.5,
-            "distanceToScaredHostile": -1,
-        }
+        enemies = [gameState.getAgentState(i) for i in self.getOpponents(gameState)]
+        invaders = [a for a in enemies if a.isPacman() and a.getPosition() is not None]
+        if len(invaders) > 0:
+            return {
+                "successorScore": 1,
+                "distanceToFood": 0,
+                "numInvaders": -1000,
+                "onDefense": 3,
+                "invaderDistance": -10,
+                "stop": -1000,
+                "reverse": -2,
+            }
+        else:
+            return {
+                "successorScore": 100,
+                "distanceToFood": -1,
+                "numInvaders": -1000,
+                "onDefense": 0,
+                "invaderDistance": -10,
+                "stop": -1000,
+                "reverse": -2,
+            }
 
 
-class GigaDefensiveAgent(GigaChadAgent):
+class DefensiveReflexAgent(ReflexCaptureAgent):
     """
-    Defensive block of GigaAgent
+    A reflex agent that tries to keep its side Pacman-free.
+    This is to give you an idea of what a defensive agent could be like.
+    It is not the best or only way to make such an agent.
     """
 
     def __init__(self, index, **kwargs):
-        super().__init__(index, **kwargs)
+        super().__init__(index)
 
     def getFeatures(self, gameState, action):
         features = {}
