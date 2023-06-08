@@ -75,21 +75,15 @@ class OffensiveAgent(ReflexCaptureAgent):
 
 class DefensiveAgent(ReflexCaptureAgent):
 
-    """
-    A reflex agent that tries to keep its side Pacman-free.
-    This is to give you an idea of what a defensive agent could be like.
-    It is not the best or only way to make such an agent.
-    """
-
     def __init__(self, index, **kwargs):
         super().__init__(index)
 
     def getFeatures(self, gameState, action):
-        features = {}
-
+        features = super().getFeatures(gameState, action)
         successor = self.getSuccessor(gameState, action)
         myState = successor.getAgentState(self.index)
         myPos = myState.getPosition()
+        features['successorScore'] = self.getScore(successor)
 
         # Computes whether we're on defense (1) or offense (0).
         features['onDefense'] = 1
@@ -105,6 +99,12 @@ class DefensiveAgent(ReflexCaptureAgent):
             dists = [self.getMazeDistance(myPos, a.getPosition()) for a in invaders]
             features['invaderDistance'] = min(dists)
 
+        # Compute distance to the nearest food on our side.
+        foodList = self.getFoodYouAreDefending(successor).asList()
+        if len(foodList) > 0:
+            minDistance = min([self.getMazeDistance(myPos, food) for food in foodList])
+            features['distanceToOurFood'] = minDistance
+
         if (action == Directions.STOP):
             features['stop'] = 1
 
@@ -116,10 +116,11 @@ class DefensiveAgent(ReflexCaptureAgent):
 
     def getWeights(self, gameState, action):
         return {
+            'successorScore': 100,
             'numInvaders': -1000,
-            'onDefense': 100,
+            'onDefense': 200,  # Increased this weight to make the agent prefer defensive status.
             'invaderDistance': -10,
+            'distanceToOurFood': -1,  # New feature to make the agent stay close to the food on our side.
             'stop': -100,
             'reverse': -2
         }
-    
